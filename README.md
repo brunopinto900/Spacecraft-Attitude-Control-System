@@ -9,7 +9,7 @@ The satellite performs three main mission modes:
 
 The satellite’s reference attitudes are provided by Direction Cosine Matrices (DCMs), and the attitudes are represented using Modified Rodrigues Parameters (MRP). The control law used for attitude stabilization is a Proportional-Derivative (PD) controller, which ensures precise tracking of the reference attitudes in all mission modes.
 
-[![Watch the video](https://github.com/brunopinto900/Spacecraft-Attitude-Control-System/blob/main/media/mars_satellite_medium.mp4))
+[Watch the video](https://raw.githubusercontent.com/brunopinto900/Spacecraft-Attitude-Control-System/main/media/mars_satellite_medium.mp4)
 
 
 ## Features
