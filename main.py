@@ -5,19 +5,24 @@ from matplotlib.animation import FuncAnimation
 import matplotlib.animation as animation
 from animate3D import animate
 from config import * # Import the constants from config.py
-
+import matplotlib          # import the module first
+import ppigrf
+from datetime import datetime
+matplotlib.use('Qt5Agg')
 
 
 # Simulation Time Parameters
+epoch = datetime(2025, 1, 1, 0, 0, 0)  # arbitrary fixed date
 orbitRadius = R_planet + h
 orbitPeriod = 2 * np.pi * np.sqrt(orbitRadius**3 / mu)  # seconds #400 #
-numberOfOrbits = 1
+numberOfOrbits = 1000
 simTime = numberOfOrbits * orbitPeriod
 print("SIM TIME (1 ORBIT)")
 print(simTime)
 dt = 1.0
 nPoints = simTime #6500
 time_plot = np.linspace(0,nPoints,int(simTime/dt)+2)
+print(time_plot.shape)
 
 def wrap_angle_rad_2pi(angle):
     """
@@ -227,7 +232,7 @@ def getMissionMode(inertialPosLMO, inertialPosGMO, t):
         mode = COMMS_MODE
     else:
         mode = NADIR_MODE
-        
+
     return mode
 
 # Coordinate frame transformations
@@ -243,7 +248,7 @@ def Inertial2Hill(t):
     '''
     # Initial conditions for LMO
     theta_dot_LMO = np.sqrt(mu/r_LMO**3) #rad/sec
-    angles_LMO = np.array([20,30,60])*np.pi/180 #Ω,i,θ(t_0), in radians
+    angles_LMO = np.array([RAAN,inclination,mean_anomaly])*np.pi/180 #Ω,i,θ(t_0), in radians
     angles_LMO += np.array([0,0, theta_dot_LMO*t]) #Ω,i,θ(t), in radians
     angles_LMO = wrap_angle_rad_2pi(angles_LMO) # + np.pi) % (2 * np.pi) - np.pi
     
@@ -319,6 +324,7 @@ def Sun2Inertial():
         [ 0, 0, 1],
         [ 0, 1, 0]
     ])
+
     return R
 
 def computeAngularVelocitySun():
@@ -384,10 +390,10 @@ def Comms2Inertial(t):
 
     #LMO
     theta_dot_LMO = np.sqrt(mu/r_LMO**3) #rad/sec
-    angles_LMO = np.array([20,30,60])*np.pi/180 #Ω,i,θ(t_0), in radians
+    angles_LMO = np.array([RAAN,inclination,mean_anomaly])*np.pi/180 #Ω,i,θ(t_0), in radians
     angles_LMO[2] = angles_LMO[2] + theta_dot_LMO*t #Ω,i,θ(t), in radians
     angles_LMO = wrap_angle_rad_2pi(angles_LMO)
-    #angles_LMO = (angles_LMO + np.pi) % (2 * np.pi) - np.pi
+    
 
     #GMO
     theta_dot_GMO = np.sqrt(mu/r_GMO**3) #rad/s
@@ -474,7 +480,331 @@ def omega_dot(omega, I, u):
 
     return w_dot
 
-def dynamics(x, u, t):
+def earth_thermosphere_density(alt_km):
+    """
+    Returns a more realistic Earth atmospheric density (kg/m^3) for LEO altitudes.
+    Approximate piecewise exponential fit for 150-600 km.
+    Source: NRLMSISE-00 typical values.
+    """
+    h = alt_km
+    if h < 150:
+        rho = 3.614e-9
+    elif h < 200:
+        rho = 2.789e-10
+    elif h < 250:
+        rho = 7.248e-11
+    elif h < 300:
+        rho = 2.418e-11
+    elif h < 350:
+        rho = 9.518e-12
+    elif h < 400:
+        rho = 3.725e-12
+    elif h < 450:
+        rho = 1.585e-12
+    elif h < 500:
+        rho = 6.967e-13
+    elif h < 550:
+        rho = 3.056e-13
+    elif h < 600:
+        rho = 1.350e-13
+    else:
+        rho = 1e-13  # Above 600 km, very tenuous
+    return rho
+
+def drag_torque(sigma_BN, r_i, v_i):
+    """
+    Mars-version atmospheric drag torque using MRPs.
+
+    Args:
+        sigma_BN   : MRP attitude parameters (body wrt inertial)
+        r_i        : position in inertial frame [m]
+        v_i        : velocity in inertial frame [m/s]
+
+    Returns:
+        tau_drag (3x1) : drag torque in body frame [N·m]
+    """
+
+    # -------------------------------------------------------
+    # 1. Planet rotation rate
+    # -------------------------------------------------------
+    theta_dot = np.sqrt(mu/r_LMO**3) # rad/s
+    omega = np.array([0, 0, theta_dot])
+
+    # -------------------------------------------------------
+    # 2. Convert MRP to DCM
+    # -------------------------------------------------------
+    C_BN = MRP2DCM(sigma_BN)
+
+    # -------------------------------------------------------
+    # 3. Compute atmospheric-relative velocity in body frame
+    # -------------------------------------------------------
+    r_i = np.array(r_i) * 1000
+    v_i = np.array(v_i) * 1000
+
+    v_atm = np.cross(omega, r_i)
+    v_rel_i = v_i - v_atm
+    v_rel_b =  ( C_BN @ v_rel_i ) 
+
+    v_mag = np.linalg.norm(v_rel_b)
+    if v_mag == 0:
+        return np.zeros(3)
+
+    v_hat_b = v_rel_b / v_mag
+
+    # -------------------------------------------------------
+    # 4. Dynamic center of pressure (projected area)
+    # -------------------------------------------------------
+    normals = {
+        "+x": np.array([ 1, 0, 0]),
+        "-x": np.array([-1, 0, 0]),
+        "+y": np.array([ 0, 1, 0]),
+        "-y": np.array([ 0,-1, 0]),
+        "+z": np.array([ 0, 0, 1]),
+        "-z": np.array([ 0, 0,-1])
+    }
+
+    face_centers = {
+        "+x": np.array([ Lx/2, 0,      0]),
+        "-x": np.array([-Lx/2, 0,      0]),
+        "+y": np.array([ 0,      Ly/2, 0]),
+        "-y": np.array([ 0,     -Ly/2, 0]),
+        "+z": np.array([ 0,      0,     Lz/2]),
+        "-z": np.array([ 0,      0,    -Lz/2])
+    }
+
+    areas = {
+        "+x": Ly*Lz, "-x": Ly*Lz,
+        "+y": Lx*Lz, "-y": Lx*Lz,
+        "+z": Lx*Ly, "-z": Lx*Ly
+    }
+
+    weights, centers = [], []
+
+    for key in normals:
+        proj = np.dot(v_hat_b, normals[key])
+        if proj < 0:  # wind-facing
+            A_proj = areas[key] * abs(proj)
+            weights.append(A_proj)
+            centers.append(face_centers[key])
+
+    if len(weights) == 0:
+        r_cp = np.zeros(3)
+    else:
+        weights = np.array(weights)
+        centers = np.array(centers)
+        r_cp = (weights[:, None] * centers).sum(axis=0) / weights.sum()
+
+    # -------------------------------------------------------
+    # 5. Drag force model
+    # -------------------------------------------------------
+    A_ref = max(Lx*Ly, Ly*Lz, Lx*Lz)
+    rho = earth_thermosphere_density(h)
+    F_drag_b = -0.5 * rho * v_mag**2 * C_d * A_ref * v_hat_b
+
+    # -------------------------------------------------------
+    # 6. Drag torque in body frame
+    # -------------------------------------------------------
+    tau = np.max(r_cp) * F_drag_b
+    return tau
+
+def drag_force(sigma_BN, r_i, v_i):
+    """
+    Mars-version atmospheric drag torque using MRPs.
+
+    Args:
+        sigma_BN   : MRP attitude parameters (body wrt inertial)
+        r_i        : position in inertial frame [m]
+        v_i        : velocity in inertial frame [m/s]
+
+    Returns:
+        tau_drag (3x1) : drag torque in body frame [N·m]
+    """
+
+    # -------------------------------------------------------
+    # 1. Planet rotation rate
+    # -------------------------------------------------------
+    theta_dot = np.sqrt(mu/r_LMO**3) # rad/s
+    omega = np.array([0, 0, theta_dot])
+
+    # -------------------------------------------------------
+    # 2. Convert MRP to DCM
+    # -------------------------------------------------------
+    C_BN = MRP2DCM(sigma_BN)
+
+    # -------------------------------------------------------
+    # 3. Compute atmospheric-relative velocity in body frame
+    # -------------------------------------------------------
+    r_i = np.array(r_i) * 1000
+    v_i = np.array(v_i) * 1000
+
+    v_atm = np.cross(omega, r_i)
+    v_rel_i = v_i - v_atm
+    v_rel_b =  ( C_BN @ v_rel_i ) 
+
+    v_mag = np.linalg.norm(v_rel_b)
+    if v_mag == 0:
+        return np.zeros(3)
+
+    v_hat_b = v_rel_b / v_mag
+
+    # -------------------------------------------------------
+    # 4. Dynamic center of pressure (projected area)
+    # -------------------------------------------------------
+    normals = {
+        "+x": np.array([ 1, 0, 0]),
+        "-x": np.array([-1, 0, 0]),
+        "+y": np.array([ 0, 1, 0]),
+        "-y": np.array([ 0,-1, 0]),
+        "+z": np.array([ 0, 0, 1]),
+        "-z": np.array([ 0, 0,-1])
+    }
+
+    face_centers = {
+        "+x": np.array([ Lx/2, 0,      0]),
+        "-x": np.array([-Lx/2, 0,      0]),
+        "+y": np.array([ 0,      Ly/2, 0]),
+        "-y": np.array([ 0,     -Ly/2, 0]),
+        "+z": np.array([ 0,      0,     Lz/2]),
+        "-z": np.array([ 0,      0,    -Lz/2])
+    }
+
+    areas = {
+        "+x": Ly*Lz, "-x": Ly*Lz,
+        "+y": Lx*Lz, "-y": Lx*Lz,
+        "+z": Lx*Ly, "-z": Lx*Ly
+    }
+
+    weights, centers = [], []
+
+    for key in normals:
+        proj = np.dot(v_hat_b, normals[key])
+        if proj < 0:  # wind-facing
+            A_proj = areas[key] * abs(proj)
+            weights.append(A_proj)
+            centers.append(face_centers[key])
+
+    if len(weights) == 0:
+        r_cp = np.zeros(3)
+    else:
+        weights = np.array(weights)
+        centers = np.array(centers)
+        r_cp = (weights[:, None] * centers).sum(axis=0) / weights.sum()
+
+    # -------------------------------------------------------
+    # 5. Drag force model
+    # -------------------------------------------------------
+    A_ref = max(Lx*Ly, Ly*Lz, Lx*Lz)
+    rho = earth_thermosphere_density(h)
+    F_drag_b = -0.5 * rho * v_mag**2 * C_d * A_ref * v_hat_b
+    return F_drag_b
+
+def calculateForceDisturbances(sigma_BN, r_i, v_i):
+
+    # Atmospheric (Drag) Torque
+    F_drag_body = drag_force(sigma_BN, r_i, v_i)
+    C_BN = MRP2DCM(sigma_BN)  # body -> inertial
+    F_drag_inertial = C_BN.T @ F_drag_body
+    return F_drag_inertial
+
+def gravity_gradient_torque(rN, sigma_BN):
+    """
+    Compute gravity-gradient torque in the body frame.
+    
+    Args:
+        rN       : satellite position in inertial frame [m]
+        sigma_BN : MRP vector describing body -> inertial rotation
+        I_b      : 3x3 inertia matrix in body frame [kg*m^2]
+        mu       : gravitational parameter of Earth [m^3/s^2]
+    
+    Returns:
+        T_gg : 3x1 torque vector in body frame [N*m]
+    """
+    # DCM: body -> inertial
+    C_BN = MRP2DCM(sigma_BN)
+    
+    # Position in body frame
+    r_b = C_BN @ rN
+    r_norm = np.linalg.norm(r_b)
+    r_hat = r_b / r_norm
+    
+    # Gravity gradient torque
+    T_gg = 3 * mu / r_norm**3 * np.cross(r_hat, I_b @ r_hat)
+    
+    return T_gg
+
+def B_eci_dipole(rN):
+    """
+    Compute Earth's magnetic field in ECI using a simple dipole model.
+    
+    Args:
+        rN : position vector in ECI [km]
+        
+    Returns:
+        B_eci : magnetic field in ECI [T]
+    """
+    r = np.array(rN)
+    r_norm = np.linalg.norm(r)
+    r_hat = r / r_norm
+    z_hat = np.array([0, 0, 1])
+    
+    # Earth's magnetic moment magnitude (approx)
+    B0 = 3.12e-5  # Tesla at reference radius (~Earth surface)
+    R_E = 6371.0  # km
+    # Dipole scaling
+    factor = B0 * (R_E / r_norm)**3
+    
+    B_eci = factor * (3 * np.dot(r_hat, z_hat) * r_hat - z_hat)
+    return B_eci
+
+def magnetic_torque_igrf(rN, sigma_BN):
+    """
+    Compute magnetic torque in body frame without recomputing IGRF.
+    
+    Args:
+        m_b     : satellite magnetic dipole in body frame [A·m^2]
+        B_eci   : Earth magnetic field vector in inertial frame [T] (precomputed)
+        sigma_BN: MRP attitude vector (body -> inertial)
+    
+    Returns:
+        T_mag_b: torque in body frame [N·m]
+    """
+    m_b = np.array([2.64/1000, 2.64/1000, 2.64/1000])
+
+    B_eci = B_eci_dipole(rN)
+
+    # Convert B field from inertial to body frame
+    C_BN = MRP2DCM(sigma_BN)
+    B_b = C_BN @ B_eci
+    
+    # Ensure flat vectors
+    m_b = np.array(m_b).reshape(3)
+    B_b = np.array(B_b).reshape(3)
+    
+    # Torque
+    T_mag_b = np.cross(m_b, B_b)
+    return T_mag_b
+
+
+
+def calculateTorqueDisturbances(sigma_BN, r_i, v_i):
+
+    # Atmospheric (Drag) Torque
+    aero_drag_torque = drag_torque(sigma_BN, r_i, v_i)
+
+    # Gravity Gradient
+    gravity_grad_torque = gravity_gradient_torque(r_i, sigma_BN)
+
+    # Magnetic Dipole
+    
+    mag_torque = magnetic_torque_igrf(r_i, sigma_BN)
+
+    disturbance = aero_drag_torque + gravity_grad_torque + mag_torque
+
+   
+
+    return disturbance
+
+def dynamics(x, d, u, t):
     """
     Spacecraft dynamics using Modified Rodrigues Parameters (MRP)
 
@@ -484,6 +814,8 @@ def dynamics(x, u, t):
         State np.array [sigma (3x1); omega_BN (3x1)] where
         sigma: MRP attitude
         omega_BN: angular velocity of B relative to N in B frame
+    d : ndarray, shape (3,)
+        Disturbance torque np.array
     u : ndarray, shape (3,)
         Control torque np.array
     t : float
@@ -517,7 +849,76 @@ def dynamics(x, u, t):
     xdot = np.hstack( (sigma_dot,omega_dot) )
     return xdot
 
-def RK4(xdot_func, x_t, u_t, t, dt):
+def gravity_acceleration_j2(r):
+    """
+    Compute gravitational acceleration with J2 perturbation.
+    
+    Args:
+        r : position vector in inertial frame [m]
+        
+    Returns:
+        a : acceleration vector [m/s^2]
+    """
+    J2 = 1.08263e-3
+
+    x, y, z = r
+    r_norm = np.linalg.norm(r)
+    
+    # Central gravity
+    a_central = -mu * r / r_norm**3
+    
+    # J2 perturbation
+    z2 = z**2
+    r2 = r_norm**2
+    factor = 1.5 * J2 * mu * R_planet**2 / r_norm**5
+    
+    a_j2 = factor * np.array([
+        x * (5*z2/r2 - 1),
+        y * (5*z2/r2 - 1),
+        z * (5*z2/r2 - 3)
+    ])
+    
+    return a_central + a_j2
+
+def rk4_gravity_step(acc_drag ,r, v, dt, mu):
+    """
+    RK4 integration for position and velocity under central gravity only.
+    
+    r : position vector [m]
+    v : velocity vector [m/s]
+    dt: timestep [s]
+    mu: gravitational parameter [m^3/s^2]
+    
+    Returns:
+        r_new, v_new : updated position and velocity
+    """
+    def acceleration(pos):
+        return gravity_acceleration_j2(pos) + acc_drag #-mu * pos / np.linalg.norm(pos)**3 + acc_drag
+
+    # k1
+    k1_v = acceleration(r) * dt
+    k1_r = v * dt
+
+    # k2
+    k2_v = acceleration(r + 0.5*k1_r) * dt
+    k2_r = (v + 0.5*k1_v) * dt
+
+    # k3
+    k3_v = acceleration(r + 0.5*k2_r) * dt
+    k3_r = (v + 0.5*k2_v) * dt
+
+    # k4
+    k4_v = acceleration(r + k3_r) * dt
+    k4_r = (v + k3_v) * dt
+
+    # Update
+    r_new = r + (k1_r + 2*k2_r + 2*k3_r + k4_r)/6
+    v_new = v + (k1_v + 2*k2_v + 2*k3_v + k4_v)/6
+
+    return r_new, v_new
+
+
+def RK4(xdot_func, x_t, d_t, u_t, t, dt):
     """
     Fourth-order Runge-Kutta integration step.
 
@@ -527,6 +928,8 @@ def RK4(xdot_func, x_t, u_t, t, dt):
         Function computing the time derivative of the state: xdot = xdot_func(x, u, t)
     x_t : ndarray
         Current state np.array
+    d_t : ndarray
+        Torque disturbance at current time
     u_t : ndarray
         Control input at current time
     t : float
@@ -540,10 +943,10 @@ def RK4(xdot_func, x_t, u_t, t, dt):
         State np.array at time t + dt
     """
     
-    k1 = xdot_func(x_t, u_t, t)
-    k2 = xdot_func(x_t + k1 * dt / 2, u_t, t + dt / 2)
-    k3 = xdot_func(x_t + k2 * dt / 2, u_t, t + dt / 2)
-    k4 = xdot_func(x_t + k3 * dt, u_t, t + dt)
+    k1 = xdot_func(x_t, d_t, u_t, t)
+    k2 = xdot_func(x_t + k1 * dt / 2, d_t, u_t, t + dt / 2)
+    k3 = xdot_func(x_t + k2 * dt / 2, d_t, u_t, t + dt / 2)
+    k4 = xdot_func(x_t + k3 * dt, d_t, u_t, t + dt)
 
     x_next = x_t + (k1 + 2*k2 + 2*k3 + k4) * dt / 6
     return x_next
@@ -711,11 +1114,13 @@ def main():
     # time parameters
     time = 0
 
-   # Initial conditions
+    # Initial conditions
     #LMO
     theta_dot_LMO = np.sqrt(mu/r_LMO**3) #rad/sec
-    angles_LMO = np.array([20,30,60])*np.pi/180 #Ω,i,θ(t_0), in radians
+    angles_LMO = np.array([RAAN,inclination,mean_anomaly])*np.pi/180 #Ω,i,θ(t_0), in radians
     inertialPosLMO, inertialVelLMO = orbitalElements2Inertial(r_LMO, angles_LMO)
+    inertialPosLMO_noDrag = inertialPosLMO
+    inertialVelLMO_noDrag = inertialVelLMO
         
     #GMO
     theta_dot_GMO = np.sqrt(mu/r_GMO**3) #rad/s
@@ -726,8 +1131,13 @@ def main():
     sigma_BN = np.array([0.3, -0.4, 0.5])
     w_BN_B = np.array([1.0, 1.75, -2.2])*np.pi/180 # radians/s
 
+    # Magnetic field
+    # Fixed epoch
+ 
     # arrays to store data for visualization and debugging purposes
     mode = INIT
+    torqueDisturbances_history = [ np.array([0,0,0]) ] 
+    forceDisturbances_history = [ np.array([0,0,0]) ] 
     mode_history = [mode]
     attitudeError_history = [ np.array([0,0,0]) ] 
     angularVelError_history = [ np.array([0,0,0]) ]
@@ -743,6 +1153,7 @@ def main():
     control_history = [np.array([0,0,0])]
     inertialPosLMO_history = [ inertialPosLMO ]
     inertialPosGMO_history = [ inertialPosGMO ]
+    inertialPosLMO_noDrag_history = [ inertialPosLMO_noDrag ]
 
     time_history = [0]
     
@@ -795,30 +1206,21 @@ def main():
         K = (P**2) / I_b[1, 1]
        
         u = -K * attitudeError - P * angularVelError
-        control_history.append(u)
+        
 
+        # Calculate disturbances
+        dist_torque = calculateTorqueDisturbances(sigma_BN, inertialPosLMO, inertialVelLMO)
+        dist_force = calculateForceDisturbances(sigma_BN, inertialPosLMO, inertialVelLMO)
+        
+    
         # Propagate Spacecraft Dynamics
         x_t0 = np.hstack((sigma_BN, w_BN_B))
-        x_t1 = RK4(dynamics, x_t0, u, time, dt)
+        x_t1 = RK4(dynamics, x_t0, dist_torque, u, time, dt)
         sigma_BN = x_t1[:3]
-        w_BN_B = x_t1[-3:] 
-
-        # Store data for visualization and debugging
-        mode_history.append(mode)
-        attitudeError_history.append(attitudeError)
-        attitudeError_DCM_history.append(MRP2DCM(attitudeError))
-        angularVelError_history.append(angularVelError)
-        
-        reference_attitude_DCM_history.append(reference_attitude_DCM)
-        reference_sigma_history.append( DCM2MRP(reference_attitude_DCM))
-        reference_angularVel_history.append(reference_angular_velocity)
-        measured_sigma_history.append(sigma_BN)
-        measured_DCM_history.append(MRP2DCM(sigma_BN))
-        measured_angularVel_history.append(w_BN_B)
+        w_BN_B = x_t1[-3:]
 
         # Propagate time
         time = time + dt
-        time_history.append(time)
 
         # Propagate dynamics (theta - mean anomaly)
         angles_LMO += np.array([0,0, theta_dot_LMO*dt]) #Ω,i,θ(t), in radians
@@ -826,15 +1228,36 @@ def main():
         angles_LMO = wrap_angle_rad_2pi(angles_LMO)
         angles_GMO = wrap_angle_rad_2pi(angles_GMO)
 
-        #angles_LMO = (angles_LMO + np.pi) % (2 * np.pi) - np.pi
-        #angles_GMO = (angles_GMO + np.pi) % (2 * np.pi) - np.pi
-
-        inertialPosLMO, inertialVelLMO = orbitalElements2Inertial(r_LMO, angles_LMO)
+        inertialPosLMO_ORBITAL, inertialVelLMO_ORBITAL = orbitalElements2Inertial(r_LMO, angles_LMO)
         inertialPosGMO, inertialVelGMO = orbitalElements2Inertial(r_GMO, angles_GMO)
 
-        inertialPosLMO_history.append(inertialPosLMO)
-        inertialPosGMO_history.append(inertialPosGMO)
-
+        # Add force disturbances
+        #grav_accel = -mu * inertialPosLMO/np.linalg.norm(inertialPosLMO)**3
+        #a_i = grav_accel #+ dist_force/mass
+        inertialPosLMO_noDrag, inertialVelLMO_noDrag = rk4_gravity_step(np.array([0,0,0]), inertialPosLMO_noDrag, inertialVelLMO_noDrag, dt, mu)
+        inertialPosLMO, inertialVelLMO = rk4_gravity_step(dist_force/mass, inertialPosLMO, inertialVelLMO, dt, mu)
+        
+        # Store data for visualization and debugging
+        if(time >= ( orbitPeriod*(numberOfOrbits-1) ) ):
+            time_history.append(time)
+            control_history.append(u)
+            torqueDisturbances_history.append(dist_torque)
+            forceDisturbances_history.append(dist_force)
+            mode_history.append(mode)
+            attitudeError_history.append(attitudeError)
+            attitudeError_DCM_history.append(MRP2DCM(attitudeError))
+            angularVelError_history.append(angularVelError)
+            reference_attitude_DCM_history.append(reference_attitude_DCM)
+            reference_sigma_history.append( DCM2MRP(reference_attitude_DCM))
+            reference_angularVel_history.append(reference_angular_velocity)
+            measured_sigma_history.append(sigma_BN)
+            measured_DCM_history.append(MRP2DCM(sigma_BN))
+            measured_angularVel_history.append(w_BN_B)
+            inertialPosLMO_history.append(inertialPosLMO)
+            inertialPosGMO_history.append(inertialPosGMO)
+            inertialPosLMO_noDrag_history.append(inertialPosLMO_noDrag)
+        
+    #time_history = time_history[-int(orbitPeriod)-2:]
     if(SHOW_ATTITUDE):
         animate_orbit_and_attitude(inertialPosLMO_history, reference_attitude_DCM_history,measured_DCM_history, mode_history, time_history)
     
@@ -846,7 +1269,7 @@ def main():
 
         # MRP norm
         plt.subplot(2,1,1)
-        plt.plot(time_plot, np.linalg.norm(attitudeError_history, axis=1))
+        plt.plot(time_history, np.linalg.norm(attitudeError_history, axis=1))
         plt.title("MRP Norm over Time")
         plt.ylabel("||σ||")
         plt.grid(True)
@@ -854,19 +1277,28 @@ def main():
         # DCM error trace
         plt.subplot(2,1,2)
         race_Rerr = [np.trace(dcm_err) for dcm_err in attitudeError_DCM_history]
-        plt.plot(time_plot, race_Rerr)
+        plt.plot(time_history, race_Rerr)
         plt.title("Trace of Error DCM over Time")
         plt.xlabel("Time [s]")
         plt.ylabel("trace(R_ref^T R_meas)")
         plt.grid(True)
-
         plt.tight_layout()
 
         fig = plt.figure(figsize=(8, 8))
+        plt.plot(time_history, forceDisturbances_history)
+        plt.title("Disturbance Force over Time")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Force (N)")
+        plt.legend(['f1','f2','f3'])
+        plt.tight_layout()
+        
+        fig = plt.figure(figsize=(8, 8))
         ax = fig.add_subplot(111, projection='3d')
         pos_array = np.array(inertialPosLMO_history)
+        pos_array_noDrag = np.array(inertialPosLMO_noDrag_history)
         print(pos_array.shape)
         ax.plot(pos_array[:,0], pos_array[:,1], pos_array[:,2], 'b', label='Orbit')
+        ax.plot(pos_array_noDrag[:,0], pos_array_noDrag[:,1], pos_array_noDrag[:,2], 'g--', label='Orbit (No drag)')
         ax.scatter([0], [0], [0], color='red', s=80, label='Mars')
         # Formatting
         ax.set_xlabel('X (km)')
@@ -879,13 +1311,13 @@ def main():
 
         plt.figure(figsize=(10,6))
         plt.subplot(2,1,1)
-        plt.plot(time_plot, measured_sigma_history)
+        plt.plot(time_history, measured_sigma_history)
         plt.title("MRP Attitude σ_BN vs Time")
         plt.xlabel("Time (s)")
         plt.ylabel("σ")
         plt.legend(['σ1','σ2','σ3'])
         plt.subplot(2,1,2)
-        plt.plot(time_plot, measured_angularVel_history)
+        plt.plot(time_history, measured_angularVel_history)
         plt.title("Angular Rate ω_BN vs Time")
         plt.xlabel("Time (s)")
         plt.ylabel("ω (rad/s)")
@@ -894,13 +1326,13 @@ def main():
 
         plt.figure(figsize=(10,6))
         plt.subplot(2,1,1)
-        plt.plot(time_plot, attitudeError_history)
+        plt.plot(time_history, attitudeError_history)
         plt.title("MRP σ_BR Error vs Time")
         plt.xlabel("Time (s)")
         plt.ylabel("σ")
         plt.legend(['σ1','σ2','σ3'])
         plt.subplot(2,1,2)
-        plt.plot(time_plot, angularVelError_history)
+        plt.plot(time_history, angularVelError_history)
         plt.title("Angular Rate Error ω_BR vs Time")
         plt.xlabel("Time (s)")
         plt.ylabel("ω (rad/s)")
@@ -908,7 +1340,7 @@ def main():
         plt.tight_layout()
 
         plt.figure()
-        plt.plot(time_plot, mode_history, drawstyle='steps-post')  # optional: step plot for discrete modes
+        plt.plot(time_history, mode_history, drawstyle='steps-post')  # optional: step plot for discrete modes
         plt.title("Vehicle Mode History vs Time")
         plt.xlabel("Time (s)")
         plt.ylabel("Mode")
@@ -918,10 +1350,17 @@ def main():
             [INIT, SUN_MODE, NADIR_MODE, COMMS_MODE], 
             ["INIT", "SUN_MODE", "NADIR_MODE", "COMMS_MODE"]
         )
-    
-        plt.figure(figsize=(8,4))
-        plt.plot(time_plot, control_history)
+        
+        plt.figure(figsize=(10,6))
+        plt.subplot(2,1,1)
+        plt.plot(time_history, control_history)
         plt.title("Control Torque over Time")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Torque (N·m)")
+        plt.legend(['τ1','τ2','τ3'])
+        plt.subplot(2,1,2)
+        plt.plot(time_history, torqueDisturbances_history)
+        plt.title("Disturbance Torque over Time")
         plt.xlabel("Time (s)")
         plt.ylabel("Torque (N·m)")
         plt.legend(['τ1','τ2','τ3'])

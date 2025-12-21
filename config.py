@@ -9,11 +9,15 @@ mu = 42828.3  # Gravitational parameter for Mars (in km^3/s^2)
 r_LMO = R_planet + h  # Radius of the Low Mars Orbit (LMO) in kilometers (km)
 r_GMO = 20424.2  # Radius of the Geostationary Mars Orbit (GMO) in kilometers (km)
 
+mean_anomaly = 60 # degrees
+inclination = 30 # degrees
+RAAN = 20 # degrees
+
 # ------------------------------
 # Display Settings
 # ------------------------------
-PLOT_OFFLINE = False  # Set to True to disable interactive plotting (offline mode)
-ANIM_3D = True  # Set to True to enable 3D animation
+PLOT_OFFLINE = True  # Set to True to disable interactive plotting (offline mode)
+ANIM_3D = False  # Set to True to enable 3D animation
 SHOW_ATTITUDE = False  # Set to True to show the satellite's attitude (orientation)
 
 # ------------------------------
@@ -37,6 +41,21 @@ ANG_DIFF_FOR_COMMUNICATIONS = 35  # Maximum allowable angular difference for sat
 # Satellite Parameters
 # ------------------------------
 # Satellite's inertia matrix (I_b) is a 3x3 matrix that describes how the satellite resists rotational motion.
-# The values are given in units of kg*m^3.
+# The values are given in units of kg*m^2.
 # Here we assume a simple diagonal inertia matrix, representing the principal moments of inertia about each axis.
-I_b = np.diag([10.0, 5.0, 7.5])  # Inertia matrix in kg*m^3 (diagonal form, for simplicity)
+
+Lx = 0.20 #m length x-direction
+Ly = 0.10 #m length y-direction
+Lz = 0.15 #m length z-direction
+mass = 2.6 #kg
+Ixx = (1/12) * mass * (Ly**2 + Lz**2)
+Iyy = (1/12) * mass * (Lx**2 + Lz**2)
+Izz = (1/12) * mass * (Lx**2 + Ly**2)
+I_b = np.diag([Ixx, Iyy, Izz])
+SA = 2 * (Lx*Ly + Lx*Lz + Ly*Lz) # m^2 Surface Area
+
+# Environmental Parameters
+C_d = 2.2 # Darg coefficient
+
+
+
