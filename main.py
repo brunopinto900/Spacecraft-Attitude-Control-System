@@ -15,7 +15,7 @@ matplotlib.use('Qt5Agg')
 epoch = datetime(2025, 1, 1, 0, 0, 0)  # arbitrary fixed date
 orbitRadius = R_planet + h
 orbitPeriod = 2 * np.pi * np.sqrt(orbitRadius**3 / mu)  # seconds #400 #
-numberOfOrbits = 1000
+numberOfOrbits = 1
 simTime = numberOfOrbits * orbitPeriod
 print("SIM TIME (1 ORBIT)")
 print(simTime)
@@ -222,6 +222,7 @@ def angle_between_two_vec(vec1, vec2):
     
     return theta_deg
 
+
 def getMissionMode(inertialPosLMO, inertialPosGMO, t):
     mode = INIT
     if(t < 1000):
@@ -233,6 +234,7 @@ def getMissionMode(inertialPosLMO, inertialPosGMO, t):
     else:
         mode = NADIR_MODE
 
+    mode = SUN_MODE
     return mode
 
 # Coordinate frame transformations
@@ -804,7 +806,62 @@ def calculateTorqueDisturbances(sigma_BN, r_i, v_i):
 
     return disturbance
 
-def dynamics(x, d, u, t):
+def reaction_wheel_torque(omega_RW, rwalphas):
+    """
+    Compute reaction wheel angular accelerations and resulting body torque.
+    
+    Args:
+        omega_RW      : 3×1 array of RW speeds [rad/s]
+        rwalphas  : 3×1 commanded RW accelerations [rad/s²]
+    
+    Returns:
+        w123dot : 3×1 resulting angular accelerations
+        LMN_RWs : 3×1 reaction wheel torque on spacecraft body [N·m]
+    """
+
+    # Maximum angular acceleration
+    maxAlpha = maxTorque/I_RW[1,1]
+
+    w123 = np.asarray(omega_RW).reshape(3)
+    rwalphas = np.asarray(rwalphas).reshape(3)
+
+    w123dot = np.zeros(3)
+
+    for i in range(3):
+        # Speed saturation
+        if abs(w123[i]) > maxSpeed:
+            w123dot[i] = 0.0
+        else:
+            # Acceleration saturation
+            if abs(rwalphas[i]) > maxAlpha:
+                rwalphas[i] = np.sign(rwalphas[i]) * maxAlpha
+            
+        w123dot[i] = rwalphas[i]
+
+    #w123dot = rwalphas
+    LMN_RWs = I_b @ w123dot
+
+    # # Compute torque (MATLAB: Ir1B*w123dot(1)*n1 + ...)
+    # LMN_RWs = (
+    #     Ir1B @ (w123dot[0] * e1_RW) +
+    #     Ir2B @ (w123dot[1] * e2_RW) +
+    #     Ir3B @ (w123dot[2] * e3_RW)
+    # )
+
+    return LMN_RWs, w123dot 
+
+def calculateControl(omega_RW, attitudeError, angularVelError):
+    P = np.max(I_b * (2/120))
+    K = (P**2) / I_b[1, 1]
+
+    # Reaction Wheel
+    desiredTorque = -K * attitudeError - P * angularVelError
+    desired_accel_RW = np.linalg.inv(I_b) @ desiredTorque
+    u, accel_RW = reaction_wheel_torque(omega_RW, desired_accel_RW)
+    
+    return u, accel_RW
+
+def dynamics(x, d, u, omega_RW, t):
     """
     Spacecraft dynamics using Modified Rodrigues Parameters (MRP)
 
@@ -826,8 +883,6 @@ def dynamics(x, d, u, t):
     xdot : ndarray, shape (6,)
         Time derivative of state np.array
     """
-    I_b_inv = np.linalg.inv(I_b)
-
     sigma = x[0:3]
     omega = x[3:6]
     
@@ -837,13 +892,11 @@ def dynamics(x, d, u, t):
     B = (1 - sigma_n2) * np.eye(3) + 2 * tilde_matrix(sigma) + 2 * np.outer(sigma, sigma.T)
     sigma_dot = 0.25 * B @ omega
 
-    L = np.array([0,0,0])
-    #skew = -np.cross(omega, I_b @ omega) + u + L
-    
     # Angular momentum
-    H = I_b @ omega  # shape (3,)
+    H = I_sat @ omega + (I_RW1Bcg+I_RW1Bcg+I_RW1Bcg) @ omega_RW # Total H with Reaction Wheels
+
     cross_term = tilde_matrix(omega) @ H  # shape (3,)
-    omega_dot = np.linalg.inv(I_b) @ (u - cross_term)  # shape (3,)
+    omega_dot = np.linalg.inv(I_b) @ (u + d - cross_term)  # shape (3,)
     
     # Combine into xdot
     xdot = np.hstack( (sigma_dot,omega_dot) )
@@ -918,7 +971,7 @@ def rk4_gravity_step(acc_drag ,r, v, dt, mu):
     return r_new, v_new
 
 
-def RK4(xdot_func, x_t, d_t, u_t, t, dt):
+def RK4(xdot_func, x_t, d_t, u_t, omega_RW_t, t, dt):
     """
     Fourth-order Runge-Kutta integration step.
 
@@ -943,10 +996,10 @@ def RK4(xdot_func, x_t, d_t, u_t, t, dt):
         State np.array at time t + dt
     """
     
-    k1 = xdot_func(x_t, d_t, u_t, t)
-    k2 = xdot_func(x_t + k1 * dt / 2, d_t, u_t, t + dt / 2)
-    k3 = xdot_func(x_t + k2 * dt / 2, d_t, u_t, t + dt / 2)
-    k4 = xdot_func(x_t + k3 * dt, d_t, u_t, t + dt)
+    k1 = xdot_func(x_t, d_t, u_t, omega_RW_t, t)
+    k2 = xdot_func(x_t + k1 * dt / 2, d_t, u_t, omega_RW_t, t + dt / 2)
+    k3 = xdot_func(x_t + k2 * dt / 2, d_t, u_t, omega_RW_t, t + dt / 2)
+    k4 = xdot_func(x_t + k3 * dt, d_t, u_t, omega_RW_t, t + dt)
 
     x_next = x_t + (k1 + 2*k2 + 2*k3 + k4) * dt / 6
     return x_next
@@ -1130,9 +1183,7 @@ def main():
     #Spacecraft
     sigma_BN = np.array([0.3, -0.4, 0.5])
     w_BN_B = np.array([1.0, 1.75, -2.2])*np.pi/180 # radians/s
-
-    # Magnetic field
-    # Fixed epoch
+    omega_RW = np.array([0,0,0]) # Initial RW angular speed (zero initially)
  
     # arrays to store data for visualization and debugging purposes
     mode = INIT
@@ -1202,11 +1253,8 @@ def main():
                 reference_angular_velocity)
             
         # Calculate Control Input
-        P = np.max(I_b * (2/120))
-        K = (P**2) / I_b[1, 1]
-       
-        u = -K * attitudeError - P * angularVelError
-        
+        u, accelRW = calculateControl(omega_RW, attitudeError, angularVelError)
+        omega_RW = omega_RW + accelRW*dt
 
         # Calculate disturbances
         dist_torque = calculateTorqueDisturbances(sigma_BN, inertialPosLMO, inertialVelLMO)
@@ -1215,7 +1263,7 @@ def main():
     
         # Propagate Spacecraft Dynamics
         x_t0 = np.hstack((sigma_BN, w_BN_B))
-        x_t1 = RK4(dynamics, x_t0, dist_torque, u, time, dt)
+        x_t1 = RK4(dynamics, x_t0, dist_torque, u, omega_RW, time, dt)
         sigma_BN = x_t1[:3]
         w_BN_B = x_t1[-3:]
 
