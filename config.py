@@ -36,10 +36,10 @@ def Rscrew(n):
 
 
 def computeInertiaReactionWheels():
-    # Offsets from spacecraft center of mass (20 mm)
-    r1 = np.array([20, 0, 0]) / 1000
-    r2 = np.array([0, 20, 0]) / 1000
-    r3 = np.array([0, 0, 20]) / 1000
+    # Offsets from spacecraft center of mass (4 mm)
+    r1 = np.array([4, 0, 0]) / 1000
+    r2 = np.array([0, 4, 0]) / 1000
+    r3 = np.array([0, 0, 4]) / 1000
 
     # Inertia of the reaction wheel (disk)
     Idisk = (1/12) * (3*radius_RW**2 + height_RW**2)
@@ -123,9 +123,9 @@ ANG_DIFF_FOR_COMMUNICATIONS = 35  # Maximum allowable angular difference for sat
 # The values are given in units of kg*m^2.
 # Here we assume a simple diagonal inertia matrix, representing the principal moments of inertia about each axis.
 
-Lx = 0.20 #m length x-direction
-Ly = 0.10 #m length y-direction
-Lz = 0.15 #m length z-direction
+Lx = 20/100 #m length x-direction
+Ly = 10/100 #m length y-direction
+Lz = 15/100 #m length z-direction
 mass_sat = 2.6 #kg
 Ixx = (1/12) * mass_sat * (Ly**2 + Lz**2)
 Iyy = (1/12) * mass_sat * (Lx**2 + Lz**2)
@@ -136,8 +136,8 @@ SA = 2 * (Lx*Ly + Lx*Lz + Ly*Lz) # m^2 Surface Area
 # Actuators parameters
 ### Reaction Wheel
 mass_RW = 0.13 #Kg
-radius_RW = 42/1000 #mm
-height_RW = 19/1000 #mm
+radius_RW = 42/1000 #m
+height_RW = 19/1000 #m
 # Maximum Speed
 rpm = 8000
 maxSpeed = rpm * 2*np.pi / 60   # rad/s

@@ -234,7 +234,6 @@ def getMissionMode(inertialPosLMO, inertialPosGMO, t):
     else:
         mode = NADIR_MODE
 
-    mode = SUN_MODE
     return mode
 
 # Coordinate frame transformations
@@ -820,8 +819,7 @@ def reaction_wheel_torque(omega_RW, rwalphas):
     """
 
     # Maximum angular acceleration
-    maxAlpha = maxTorque/I_RW[1,1]
-
+    maxAlpha = maxTorque/I_RW[0,0]
     w123 = np.asarray(omega_RW).reshape(3)
     rwalphas = np.asarray(rwalphas).reshape(3)
 
@@ -838,17 +836,17 @@ def reaction_wheel_torque(omega_RW, rwalphas):
             
         w123dot[i] = rwalphas[i]
 
-    #w123dot = rwalphas
-    LMN_RWs = I_b @ w123dot
+    w123dot = rwalphas
+    LMN_RWs = (Ir1B+Ir2B+Ir3B) @ w123dot
 
-    # # Compute torque (MATLAB: Ir1B*w123dot(1)*n1 + ...)
-    # LMN_RWs = (
-    #     Ir1B @ (w123dot[0] * e1_RW) +
-    #     Ir2B @ (w123dot[1] * e2_RW) +
-    #     Ir3B @ (w123dot[2] * e3_RW)
-    # )
+    # Compute torque (MATLAB: Ir1B*w123dot(1)*n1 + ...)
+    #LMN_RWs = (
+    #    Ir1B @ (w123dot[0] * e1_RW) +
+    #    Ir2B @ (w123dot[1] * e2_RW) +
+    #    Ir3B @ (w123dot[2] * e3_RW)
+    #)
 
-    return LMN_RWs, w123dot 
+    return LMN_RWs, w123dot
 
 def calculateControl(omega_RW, attitudeError, angularVelError):
     P = np.max(I_b * (2/120))
@@ -856,9 +854,9 @@ def calculateControl(omega_RW, attitudeError, angularVelError):
 
     # Reaction Wheel
     desiredTorque = -K * attitudeError - P * angularVelError
-    desired_accel_RW = np.linalg.inv(I_b) @ desiredTorque
+    desired_accel_RW = np.linalg.inv((Ir1B+Ir2B+Ir3B)) @ desiredTorque
     u, accel_RW = reaction_wheel_torque(omega_RW, desired_accel_RW)
-    
+
     return u, accel_RW
 
 def dynamics(x, d, u, omega_RW, t):
@@ -1206,6 +1204,9 @@ def main():
     inertialPosGMO_history = [ inertialPosGMO ]
     inertialPosLMO_noDrag_history = [ inertialPosLMO_noDrag ]
 
+    accelRW_history = [np.array([0,0,0])]
+    omega_RW_history = [np.array([0,0,0])]
+
     time_history = [0]
     
     while(time < simTime):
@@ -1255,7 +1256,7 @@ def main():
         # Calculate Control Input
         u, accelRW = calculateControl(omega_RW, attitudeError, angularVelError)
         omega_RW = omega_RW + accelRW*dt
-
+        
         # Calculate disturbances
         dist_torque = calculateTorqueDisturbances(sigma_BN, inertialPosLMO, inertialVelLMO)
         dist_force = calculateForceDisturbances(sigma_BN, inertialPosLMO, inertialVelLMO)
@@ -1304,6 +1305,9 @@ def main():
             inertialPosLMO_history.append(inertialPosLMO)
             inertialPosGMO_history.append(inertialPosGMO)
             inertialPosLMO_noDrag_history.append(inertialPosLMO_noDrag)
+            accelRW_history.append(accelRW)
+            omega_RW_history.append(omega_RW)
+            
         
     #time_history = time_history[-int(orbitPeriod)-2:]
     if(SHOW_ATTITUDE):
@@ -1311,6 +1315,25 @@ def main():
     
     # Plot
     if(PLOT_OFFLINE):
+
+         # Plot
+        plt.figure(figsize=(10,5))
+
+        # Reaction Wheel
+        plt.subplot(2,1,1)
+        plt.plot(time_history, accelRW_history)
+        plt.title("RW Angular Accel")
+        plt.ylabel("rad/s^2")
+        plt.grid(True)
+
+        # DCM error trace
+        plt.subplot(2,1,2)
+        plt.plot(time_history, omega_RW_history)
+        plt.title("RW Angular Vel (Omega)")
+        plt.xlabel("Time [s]")
+        plt.ylabel("rad/s")
+        plt.grid(True)
+        plt.tight_layout()
 
         # Plot
         plt.figure(figsize=(10,5))
