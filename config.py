@@ -1,6 +1,17 @@
+"""
+Configuration file for spacecraft attitude control system.
+
+This module contains all constants, parameters, and configuration settings
+for the spacecraft simulation including orbital, physical, and mission parameters.
+"""
+
 import numpy as np
 
-# Functions to compute total mass and inertia
+
+# ============================================================
+# Helper Functions for Configuration
+# ============================================================
+
 def skew(v):
     """Return skew-symmetric matrix for vector v."""
     v = np.asarray(v).reshape(3)
@@ -10,9 +21,10 @@ def skew(v):
         [-v[1], v[0], 0]
     ])
 
+
 def Rscrew(n):
     """
-    Equivalent to MATLAB Rscrew(n): rotation matrix that aligns wheel's spin axis with direction n.
+    Rotation matrix that aligns wheel's spin axis with direction n.
     Assumes n is a 3×1 vector.
     """
     n = np.asarray(n).reshape(3)
@@ -31,11 +43,11 @@ def Rscrew(n):
     z /= np.linalg.norm(z)
 
     # Columns are the RW frame axes expressed in body frame
-    # This matches MATLAB: T = Rscrew(n)
     return np.column_stack((n, y, z))
 
 
 def computeInertiaReactionWheels():
+    """Compute total inertia and reaction wheel inertia tensors in body frame."""
     # Offsets from spacecraft center of mass (4 mm)
     r1 = np.array([4, 0, 0]) / 1000
     r2 = np.array([0, 4, 0]) / 1000
@@ -79,85 +91,111 @@ def computeInertiaReactionWheels():
 
     return I_RW1Bcg, I_RW2Bcg, I_RW3Bcg, Ir1B, Ir2B, Ir3B
 
-# ------------------------------
+
+# ============================================================
 # Planet and Orbit Parameters
-# ------------------------------
+# ============================================================
 R_planet = 3396.19  # Radius of Mars in kilometers (km)
 h = 400  # Altitude of the Low Mars Orbit (LMO) in kilometers (km)
 mu = 42828.3  # Gravitational parameter for Mars (in km^3/s^2)
 r_LMO = R_planet + h  # Radius of the Low Mars Orbit (LMO) in kilometers (km)
 r_GMO = 20424.2  # Radius of the Geostationary Mars Orbit (GMO) in kilometers (km)
 
-mean_anomaly = 60 # degrees
-inclination = 30 # degrees
-RAAN = 20 # degrees
+# Orbital Elements
+mean_anomaly = 60  # degrees
+inclination = 30  # degrees
+RAAN = 20  # degrees (Right Ascension of Ascending Node)
 
-# ------------------------------
+# Simulation Time Step
+dt = 1.0  # seconds
+
+
+# ============================================================
 # Display Settings
-# ------------------------------
-PLOT_OFFLINE = True  # Set to True to disable interactive plotting (offline mode)
-ANIM_3D = False  # Set to True to enable 3D animation
+# ============================================================
+PLOT_OFFLINE = False  # Set to True to disable interactive plotting (offline mode)
+ANIM_3D = True  # Set to True to enable 3D animation
 SHOW_ATTITUDE = False  # Set to True to show the satellite's attitude (orientation)
 
-# ------------------------------
+
+# ============================================================
 # Mission Modes
-# ------------------------------
+# ============================================================
 # Defining the different operational modes for the satellite:
 INIT = 0  # Initialization mode (e.g., starting conditions or booting)
 SUN_MODE = 1  # Sun-pointing mode (satellite faces the Sun for power or thermal reasons)
 NADIR_MODE = 2  # Nadir-pointing mode (satellite faces downwards to the planet's surface)
 COMMS_MODE = 3  # Communications mode (satellite is oriented to communicate with ground stations or other satellites)
 
-# ------------------------------
+
+# ============================================================
 # Mission Parameters
-# ------------------------------
+# ============================================================
 # This parameter defines the angular difference that needs to be met for communication to be possible
-# between the Low Mars Orbit (LMO) and Geostationary Mars Orbit (GMO) satellites. The angular difference 
-# must be less than the specified threshold for communications to be possible.
+# between the Low Mars Orbit (LMO) and Geostationary Mars Orbit (GMO) satellites.
 ANG_DIFF_FOR_COMMUNICATIONS = 35  # Maximum allowable angular difference for satellite communications (in degrees)
 
-# ------------------------------
-# Satellite Parameters
-# ------------------------------
-# Satellite's inertia matrix (I_b) is a 3x3 matrix that describes how the satellite resists rotational motion.
-# The values are given in units of kg*m^2.
-# Here we assume a simple diagonal inertia matrix, representing the principal moments of inertia about each axis.
 
-Lx = 20/100 #m length x-direction
-Ly = 10/100 #m length y-direction
-Lz = 15/100 #m length z-direction
-mass_sat = 2.6 #kg
+# ============================================================
+# Satellite Physical Parameters
+# ============================================================
+# Satellite dimensions
+Lx = 20/100  # m length x-direction
+Ly = 10/100  # m length y-direction
+Lz = 15/100  # m length z-direction
+mass_sat = 2.6  # kg
+
+# Satellite inertia matrix
 Ixx = (1/12) * mass_sat * (Ly**2 + Lz**2)
 Iyy = (1/12) * mass_sat * (Lx**2 + Lz**2)
 Izz = (1/12) * mass_sat * (Lx**2 + Ly**2)
 I_sat = np.diag([Ixx, Iyy, Izz])
-SA = 2 * (Lx*Ly + Lx*Lz + Ly*Lz) # m^2 Surface Area
 
-# Actuators parameters
-### Reaction Wheel
-mass_RW = 0.13 #Kg
-radius_RW = 42/1000 #m
-height_RW = 19/1000 #m
+# Surface Area
+SA = 2 * (Lx*Ly + Lx*Lz + Ly*Lz)  # m^2 Surface Area
+
+
+# ============================================================
+# Actuator Parameters - Reaction Wheels
+# ============================================================
+mass_RW = 0.13  # Kg
+radius_RW = 42/1000  # m
+height_RW = 19/1000  # m
+
 # Maximum Speed
 rpm = 8000
 maxSpeed = rpm * 2*np.pi / 60   # rad/s
+
 # Maximum Torque
 maxTorque = 0.004     # N·m
+
 # Power parameters
 dc_voltage = 5.0      # Volts
 peak_power = 3.25     # Watts
+
 # RW axes
 e1_RW = np.array([1, 0, 0])
 e2_RW = np.array([0, 1, 0])
 e3_RW = np.array([0, 0, 1])
-### Reaction Wheel
 
-# Total mass and inertia
+
+# ============================================================
+# Compute Total Mass and Inertia
+# ============================================================
+# Total mass
 mass = mass_sat + 3*mass_RW
-I_RW1Bcg, I_RW2Bcg, I_RW3Bcg, Ir1B, Ir2B, Ir3B = computeInertiaReactionWheels() # inertia matrix of RW in body frame
+
+# Reaction wheel inertia matrices in body frame
+I_RW1Bcg, I_RW2Bcg, I_RW3Bcg, Ir1B, Ir2B, Ir3B = computeInertiaReactionWheels()
+
+# Total reaction wheel inertia
 I_RW = I_RW1Bcg + I_RW2Bcg + I_RW3Bcg
+
+# Total spacecraft inertia (satellite + reaction wheels)
 I_b = I_sat + I_RW
 
-# Environmental Parameters
-C_d = 2.2 # Darg coefficient
 
+# ============================================================
+# Environmental Parameters
+# ============================================================
+C_d = 2.2  # Drag coefficient
